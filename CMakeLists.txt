@@ -17,3 +17,6 @@ use_DynamoRIO_extension(regina drmgr)
 use_DynamoRIO_extension(regina drreg)
 use_DynamoRIO_extension(regina drutil)
 use_DynamoRIO_extension(regina drsyms)
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MT")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Ox")

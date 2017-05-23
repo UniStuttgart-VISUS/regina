@@ -56,6 +56,10 @@ typedef FileIO<true, true> _FileIO;
 static _FileIO filer;
 
 
+static void clean_call(void);
+
+static bool signalIO = false;
+
 static void
 code_cache_init(void) {
     void         *drcontext;
@@ -74,7 +78,7 @@ code_cache_init(void) {
     where = INSTR_CREATE_jmp_ind(drcontext, opnd_create_reg(DR_REG_XCX));
     instrlist_meta_append(ilist, where);
     /* clean call */
-    dr_insert_clean_call(drcontext, ilist, where, (void *)cb_mem_ref, false, 0);
+    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call, false, 0);
     /* Encodes the instructions into memory and then cleans up. */
     end = instrlist_encode(drcontext, ilist, code_cache, false);
     //DR_ASSERT((size_t)(end - code_cache) < page_size);
@@ -87,6 +91,23 @@ code_cache_init(void) {
 static void code_cache_exit(void) {
     dr_nonheap_free(code_cache, dr_page_size());
 }
+
+
+
+
+static void clean_call(void) {
+    void *drcontext = dr_get_current_drcontext();
+    per_thread_t *data = static_cast<per_thread_t *>(drmgr_get_tls_field(drcontext, tls_index));
+
+    //int thread_idx = data->thread_idx;
+
+    trace_storage[data->thread_idx].push_back(trace_ref_t(*(data->buf)));
+    memset(data->buf, 0, sizeof(trace_ref_t));
+}
+
+
+
+
 
 static bool event_exception(void *drcontext, dr_exception_t *excpt) {
     return true;
@@ -805,6 +826,8 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag,
             }
         }
     }
+
+    // do IO if trace_storage is about to overflow
 
     return DR_EMIT_DEFAULT;
 }

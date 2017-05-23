@@ -19,7 +19,7 @@ typedef struct _trace_ref_t {
 
     _trace_ref_t() { };
 
-    _trace_ref_t(const _trace_ref_t &rhs) {
+    _trace_ref_t &operator=(const _trace_ref_t &rhs) {
         this->is_mem_ref = rhs.is_mem_ref;
         this->is_write = rhs.is_write;
         this->is_call = rhs.is_call;
@@ -28,6 +28,20 @@ typedef struct _trace_ref_t {
         this->size = rhs.size;
         this->instr_addr = rhs.instr_addr;
         this->target_addr = rhs.target_addr;
+
+        return *this;
+    }
+
+    _trace_ref_t(const _trace_ref_t &rhs) {
+        /*this->is_mem_ref = rhs.is_mem_ref;
+        this->is_write = rhs.is_write;
+        this->is_call = rhs.is_call;
+        this->is_ind = rhs.is_ind;
+        this->data_addr = rhs.data_addr;
+        this->size = rhs.size;
+        this->instr_addr = rhs.instr_addr;
+        this->target_addr = rhs.target_addr;*/
+        *this = rhs;
     }
 } trace_ref_t;
 
