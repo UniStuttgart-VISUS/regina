@@ -8,8 +8,8 @@
 
 typedef struct _per_thread_t {
     int thread_idx;
-    trace_ref_t *buf;
-    FILE *f;
+    trace_ref_t *basePtr;
+    trace_ref_t *currPtr;
     FILE *fileIO;
 } per_thread_t;
 
