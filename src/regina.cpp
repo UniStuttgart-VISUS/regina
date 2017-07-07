@@ -13,7 +13,8 @@
 static int tls_index = -1;
 static int thread_index = 0;
 static size_t pageSize = 0;
-static app_pc codeCache = nullptr;
+static app_pc ccTraceIOPC = nullptr;
+static app_pc ccQueryPerformanceCounterPC = nullptr;
 
 typedef struct _threadData_t {
     FILE *file;
@@ -67,7 +68,7 @@ static void code_cache_init(void) {
     byte         *end;
 
     drcontext = dr_get_current_drcontext();
-    codeCache = static_cast<app_pc>(dr_nonheap_alloc(pageSize,
+    ccTraceIOPC = static_cast<app_pc>(dr_nonheap_alloc(pageSize,
         DR_MEMPROT_READ |
         DR_MEMPROT_WRITE |
         DR_MEMPROT_EXEC));
@@ -78,18 +79,18 @@ static void code_cache_init(void) {
     dr_insert_clean_call(drcontext, ilist, where, (void *)ccTraceIO,
         false, 0);
 
-    end = instrlist_encode(drcontext, ilist, codeCache, false);
-    if (!(size_t)(end - codeCache) < pageSize) {
+    end = instrlist_encode(drcontext, ilist, ccTraceIOPC, false);
+    if (!(size_t)(end - ccTraceIOPC) < pageSize) {
         dr_fprintf(STDERR, "Page size not enough to encode clean call\n");
     }
     instrlist_clear_and_destroy(drcontext, ilist);
 
-    dr_memory_protect(codeCache, pageSize, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
+    dr_memory_protect(ccTraceIOPC, pageSize, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
 }
 
 
 static void code_cache_exit(void) {
-    dr_nonheap_free(codeCache, pageSize);
+    dr_nonheap_free(ccTraceIOPC, pageSize);
 }
 
 
@@ -275,7 +276,56 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
     instrlist_meta_preinsert(ilist, where, instr);
 
+    // store read/write flag
+    opnd1 = OPND_CREATE_MEM32(regCX, offsetof(traceData_t, iType));
+    if (write) {
+        opnd2 = OPND_CREATE_INT32(1);
+    } else {
+        opnd2 = OPND_CREATE_INT32(0);
+    }
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // set jump restore label
+    instr_t *startTimerRestoreLabel = INSTR_CREATE_label(drcontext);
+    opnd1 = opnd_create_instr(startTimerRestoreLabel);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // load jump restore label to CX reg
+    opnd1 = opnd_create_reg(regCX);
+    opnd2 = opnd_create_instr(startTimerRestoreLabel);
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // jump to code cache
+    opnd1 = opnd_create_pc(ccQueryPerformanceCounterPC);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_preinsert(ilist, where, instr);
+
     // specify instructions inserted after where
     // this would be a perf query for the end timer
     // and the overflow check for the trace buffer
+
+    // set jump restore label
+    instr_t *endTimerRestoreLabel = INSTR_CREATE_label(drcontext);
+    opnd1 = opnd_create_instr(endTimerRestoreLabel);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // load jump restore label to CX reg
+    opnd1 = opnd_create_reg(regCX);
+    opnd2 = opnd_create_instr(endTimerRestoreLabel);
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // jump to code cache
+    opnd1 = opnd_create_pc(ccQueryPerformanceCounterPC);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // restore registers
+    if (drreg_unreserve_register(drcontext, ilist, where, reg1) != DRREG_SUCCESS ||
+        drreg_unreserve_register(drcontext, ilist, where, regCX) != DRREG_SUCCESS)
+        DR_ASSERT(false);
 }
