@@ -1,0 +1,4 @@
+[submodule "dynamorio"]
+	path = dynamorio
+	url = https://github.com/DynamoRIO/dynamorio/
+	branch = release_6_2_0
