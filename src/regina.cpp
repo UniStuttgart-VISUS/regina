@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <string>
 #include <sstream>
+#include <unordered_map>
+#include <vector>
 
 #include <Windows.h>
 
@@ -34,13 +36,27 @@ typedef struct _traceData_t {
 } traceData_t;
 
 typedef struct _traceDataWS_t {
-    void *iAddr;
+    /*void *iAddr;
     int32_t iType;
     int32_t timerState;
     uint64_t startT;
-    uint64_t endT;
+    uint64_t endT;*/
+
+    traceData_t baseData;
+
     uint32_t symbolIDX;
+
+    _traceDataWS_t &operator=(const traceData_t &rhs) {
+        /*this->iAddr = rhs.iAddr;
+        this->iType = rhs.iType;
+        this->timerState = rhs.timerState;
+        this->startT = rhs.startT;
+        this->endT = rhs.endT;*/
+        this->baseData = rhs;
+    }
 } traceDataWS_t;
+
+typedef std::unordered_map<std::string, uint32_t> symbolIndexMap_t;
 
 #define MAX_NUM_MEM_REFS 1000000
 
@@ -193,6 +209,9 @@ static void onExit(void) {
     // read trace file and perform symbol queries
     dr_fprintf(STDOUT, "Performing symbol queries\n");
 
+    symbolIndexMap_t sim;
+    int symbolCounter = 0;
+
     // read for each thread the corresponding file
     for (int i = 0; i < thread_index; i++) {
         FILE *f = fopen((std::string("memtrace_rv2_")
@@ -201,12 +220,38 @@ static void onExit(void) {
         int fileSz = fseek(f, 0, SEEK_END);
         rewind(f);
 
-        traceData_t *traces = new traceData_t[fileSz / sizeof(traceData_t)];
+        int numTraces = fileSz / sizeof(traceData_t);
+
+        traceData_t *traces = new traceData_t[numTraces];
 
         fread(traces, 1, fileSz, f);
 
-        // perform symbol queries
-        
+        std::vector<traceDataWS_t> traceBuffer(numTraces);
+
+        for (int traceIdx = 0; traceIdx < numTraces; traceIdx++) {
+            traceDataWS_t tmp;
+            tmp = traces[traceIdx];
+
+            // perform symbol queries
+            std::string symbol;
+            symbolLookUp(static_cast<app_pc>(traces[traceIdx].iAddr), symbol);
+
+            auto fit = sim.find(symbol);
+            if (fit != sim.end()) {
+                // symbol already exists -> use its index
+                tmp.symbolIDX = fit->second;
+            } else {
+                sim.insert(std::make_pair(symbol, symbolCounter));
+                tmp.symbolIDX = symbolCounter;
+                symbolCounter++;
+            }
+
+            traceBuffer[traceIdx] = tmp;
+        }
+
+        delete[] traces;
+
+        dr_write_file(f, traceBuffer.data(), traceBuffer.size() * sizeof(traceDataWS_t));
 
         fclose(f);
     }
