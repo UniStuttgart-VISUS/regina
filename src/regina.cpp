@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string>
+#include <sstream>
 
 #include <Windows.h>
 
@@ -8,6 +9,7 @@
 #include "drmgr.h"
 #include "drreg.h"
 #include "drutil.h"
+#include "drsyms.h"
 
 
 static int tls_index = -1;
@@ -25,13 +27,20 @@ typedef struct _threadData_t {
 
 typedef struct _traceData_t {
     void *iAddr;
-    void *dAddr;
-    int32_t dSize;
     int32_t iType;
     int32_t timerState;
     uint64_t startT;
     uint64_t endT;
 } traceData_t;
+
+typedef struct _traceDataWS_t {
+    void *iAddr;
+    int32_t iType;
+    int32_t timerState;
+    uint64_t startT;
+    uint64_t endT;
+    uint32_t symbolIDX;
+} traceDataWS_t;
 
 #define MAX_NUM_MEM_REFS 1000000
 
@@ -42,6 +51,8 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     bool write);
 
 static void traceIO(void *drcontext);
+
+static void symbolLookUp(app_pc addr, std::string &symbol);
 
 
 /**
@@ -182,6 +193,23 @@ static void onExit(void) {
     // read trace file and perform symbol queries
     dr_fprintf(STDOUT, "Performing symbol queries\n");
 
+    // read for each thread the corresponding file
+    for (int i = 0; i < thread_index; i++) {
+        FILE *f = fopen((std::string("memtrace_rv2_")
+            + std::to_string(i) + std::string(".mmtrd")).c_str(), "rwb");
+
+        int fileSz = fseek(f, 0, SEEK_END);
+        rewind(f);
+
+        traceData_t *traces = new traceData_t[fileSz / sizeof(traceData_t)];
+
+        fread(traces, 1, fileSz, f);
+
+        // perform symbol queries
+        
+
+        fclose(f);
+    }
 
 
     dr_fprintf(STDOUT, "Client cleanup\n");
@@ -203,6 +231,7 @@ static void onExit(void) {
 
     drutil_exit();
     drmgr_exit();
+    drsym_exit();
 }
 
 
@@ -236,6 +265,11 @@ void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 
     if (drreg_init(&ops) != DRREG_SUCCESS) {
         dr_fprintf(STDERR, "Could not clobber register slots\n");
+        return;
+    }
+
+    if (drsym_init(nullptr) != DRSYM_SUCCESS) {
+        dr_fprintf(STDERR, "Could not initialize symbol access tool\n");
         return;
     }
 
@@ -429,4 +463,51 @@ static void traceIO(void *drcontext) {
 #endif
 
     data->bufferPtr = data->bufferBase;
+}
+
+
+static void symbolLookUp(app_pc addr, std::string &symbol) {
+    // lookup module containing address, might be null
+    module_data_t *data = dr_lookup_module(addr);
+
+    if (data == nullptr) {
+        // module not found
+        return;
+    }
+
+    const int MAX_SYMBOL_NAME = 256;
+
+    char symName[MAX_SYMBOL_NAME];
+    char symFile[MAXIMUM_PATH];
+
+    // initialize symbol info struct
+    drsym_info_t sym;
+    sym.struct_size = sizeof(sym);
+    sym.name = symName;
+    sym.name_size = MAX_SYMBOL_NAME;
+    sym.file = symFile;
+    sym.file_size = MAXIMUM_PATH;
+
+    drsym_error_t symres = drsym_lookup_address(data->full_path,
+        addr - data->start, &sym, DRSYM_DEMANGLE_FULL);
+
+    if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+        std::stringstream stream;
+
+        // get name of module
+        const char *modname = dr_module_preferred_name(data);
+        if (modname == nullptr) {
+            modname = "<noname>";
+        }
+
+        stream << modname << '#' << sym.name;
+        if (symres != DRSYM_ERROR_LINE_NOT_AVAILABLE) {
+            // source information is available
+            stream << '#' << sym.file << '#' << sym.line;
+        }
+
+        symbol = stream.str();
+    }
+
+    dr_free_module_data(data);
 }
