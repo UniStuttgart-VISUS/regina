@@ -20,6 +20,7 @@ typedef struct _threadData_t {
     FILE *file;
     void *bufferBase;
     void *bufferPtr;
+    void *bufferEnd;
 } threadData_t;
 
 typedef struct _traceData_t {
@@ -27,6 +28,7 @@ typedef struct _traceData_t {
     void *dAddr;
     int32_t dSize;
     int32_t iType;
+    int32_t timerState;
     uint64_t startT;
     uint64_t endT;
 } traceData_t;
@@ -56,8 +58,20 @@ static void ccTraceIO(void) {
  * This call is very expensive, but should be free of system_calls.
  */
 static void ccQueryPerformanceCounter(void) {
+    void *drcontext = dr_get_current_drcontext();
+    threadData_t *data = static_cast<threadData_t*>(drmgr_get_tls_field(drcontext, tls_index));
+    traceData_t *tPtr = static_cast<traceData_t*>(data->bufferPtr);
+
     LARGE_INTEGER timer;
-    QueryPerformanceCounter(&timer);
+    QueryPerformanceCounter(&timer); //< the expensive part
+
+    if (tPtr->timerState) {
+        tPtr->timerState = 1;
+        tPtr->startT = timer.QuadPart;
+    } else {
+        tPtr->timerState = 0;
+        tPtr->endT = timer.QuadPart;
+    }
 }
 
 
@@ -112,6 +126,7 @@ static void onThreadInit(void *drcontext) {
 
     data->bufferBase = dr_thread_alloc(drcontext, MEM_BUF_SIZE);
     data->bufferPtr = data->bufferBase;
+    data->bufferEnd = static_cast<char*>(data->bufferBase) + MEM_BUF_SIZE;
 
     data->file = fopen((std::string("memtrace_rv2_") 
         + std::to_string(thread_index) + std::string(".mmtrd")).c_str(), "wb");
@@ -286,11 +301,14 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
     instrlist_meta_preinsert(ilist, where, instr);
 
+    // set timerState to 0 -> timer started
+    opnd1 = OPND_CREATE_MEM32(regCX, offsetof(traceData_t, timerState));
+    opnd2 = OPND_CREATE_INT32(0);
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+
+
     // set jump restore label
     instr_t *startTimerRestoreLabel = INSTR_CREATE_label(drcontext);
-    opnd1 = opnd_create_instr(startTimerRestoreLabel);
-    instr = INSTR_CREATE_jmp(drcontext, opnd1);
-    instrlist_meta_preinsert(ilist, where, instr);
 
     // load jump restore label to CX reg
     opnd1 = opnd_create_reg(regCX);
@@ -303,15 +321,15 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     instr = INSTR_CREATE_jmp(drcontext, opnd1);
     instrlist_meta_preinsert(ilist, where, instr);
 
+    // set restore jump target
+    instrlist_meta_preinsert(ilist, where, startTimerRestoreLabel);
+
     // specify instructions inserted after where
     // this would be a perf query for the end timer
     // and the overflow check for the trace buffer
 
     // set jump restore label
     instr_t *endTimerRestoreLabel = INSTR_CREATE_label(drcontext);
-    opnd1 = opnd_create_instr(endTimerRestoreLabel);
-    instr = INSTR_CREATE_jmp(drcontext, opnd1);
-    instrlist_meta_postinsert(ilist, where, instr);
 
     // load jump restore label to CX reg
     opnd1 = opnd_create_reg(regCX);
@@ -323,6 +341,60 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     opnd1 = opnd_create_pc(ccQueryPerformanceCounterPC);
     instr = INSTR_CREATE_jmp(drcontext, opnd1);
     instrlist_meta_postinsert(ilist, where, instr);
+
+    // set restore jump target
+    instrlist_meta_postinsert(ilist, where, endTimerRestoreLabel);
+
+    // increment bufferPtr
+    opnd1 = opnd_create_reg(regCX);
+    opnd2 = opnd_create_base_disp(regCX, DR_REG_NULL, 0, sizeof(traceData_t),
+        OPSZ_lea);
+    instr = INSTR_CREATE_lea(drcontext, opnd1, opnd2);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    drmgr_insert_read_tls_field(drcontext, tls_index, ilist, where, reg1);
+    opnd1 = OPND_CREATE_MEMPTR(reg1, offsetof(threadData_t, bufferPtr));
+    opnd2 = opnd_create_reg(regCX);
+    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // jump to IO clean call, if buffer is full
+    // set CX reg to jump condition
+    opnd1 = opnd_create_reg(reg1);
+    opnd2 = OPND_CREATE_MEMPTR(reg1, offsetof(threadData_t, bufferEnd));
+    instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
+    instrlist_meta_postinsert(ilist, where, instr);
+    opnd1 = opnd_create_reg(regCX);
+    opnd2 = opnd_create_base_disp(reg1, regCX, 1, 0, OPSZ_lea);
+    instr = INSTR_CREATE_lea(drcontext, opnd1, opnd2);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // set jump call label
+    instr_t *traceIOCallLabel = INSTR_CREATE_label(drcontext);
+    opnd1 = opnd_create_instr(traceIOCallLabel);
+    instr = INSTR_CREATE_jecxz(drcontext, opnd1);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // set jump restore label and jump there, if clean call cond not met
+    instr_t *traceIORestoreLabel = INSTR_CREATE_label(drcontext);
+    opnd1 = opnd_create_instr(traceIORestoreLabel);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // do the call
+    instrlist_meta_postinsert(ilist, where, traceIOCallLabel);
+    // set restore target
+    opnd1 = opnd_create_reg(regCX);
+    opnd2 = opnd_create_instr(traceIORestoreLabel);
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_postinsert(ilist, where, instr);
+    // jump to traceIO clean call
+    opnd1 = opnd_create_pc(ccTraceIOPC);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_postinsert(ilist, where, instr);
+
+    // restore target
+    instrlist_meta_postinsert(ilist, where, traceIORestoreLabel);
 
     // restore registers
     if (drreg_unreserve_register(drcontext, ilist, where, reg1) != DRREG_SUCCESS ||
