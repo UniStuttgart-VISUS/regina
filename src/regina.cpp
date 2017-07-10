@@ -39,7 +39,9 @@ typedef struct _traceData_t {
 
 
 static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
-    int pos, bool write);
+    bool write);
+
+static void traceIO(void *drcontext);
 
 
 /**
@@ -49,7 +51,7 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
 static void ccTraceIO(void) {
     void *drcontext = dr_get_current_drcontext();
 
-    //memtrace(drcontext);
+    traceIO(drcontext);
 }
 
 
@@ -59,18 +61,23 @@ static void ccTraceIO(void) {
  */
 static void ccQueryPerformanceCounter(void) {
     void *drcontext = dr_get_current_drcontext();
-    threadData_t *data = static_cast<threadData_t*>(drmgr_get_tls_field(drcontext, tls_index));
+    threadData_t *data = static_cast<threadData_t*>(
+        drmgr_get_tls_field(drcontext, tls_index));
     traceData_t *tPtr = static_cast<traceData_t*>(data->bufferPtr);
 
     LARGE_INTEGER timer;
-    QueryPerformanceCounter(&timer); //< the expensive part
+    bool success = QueryPerformanceCounter(&timer); //< the expensive part
 
-    if (tPtr->timerState) {
-        tPtr->timerState = 1;
-        tPtr->startT = timer.QuadPart;
+    if (success) {
+        if (tPtr->timerState == 0) {
+            tPtr->timerState = 1;
+            tPtr->startT = timer.QuadPart;
+        } else if (tPtr->timerState == 1) {
+            tPtr->timerState = 0;
+            tPtr->endT = timer.QuadPart;
+        }
     } else {
-        tPtr->timerState = 0;
-        tPtr->endT = timer.QuadPart;
+        tPtr->timerState = 3;
     }
 }
 
@@ -152,19 +159,19 @@ static dr_emit_flags_t onBBInsert(void *drcontext, void *tag, instrlist_t *bb,
     }
 
     if (instr_reads_memory(instr)) {
-        for (int i = 0; i < instr_num_srcs(instr); i++) {
+        instrument(drcontext, bb, instr, false);
+        /*for (int i = 0; i < instr_num_srcs(instr); i++) {
             if (opnd_is_memory_reference(instr_get_src(instr, i))) {
-                instrument(drcontext, bb, instr, i, false);
             }
-        }
+        }*/
     }
 
     if (instr_writes_memory(instr)) {
-        for (int i = 0; i < instr_num_dsts(instr); i++) {
+        instrument(drcontext, bb, instr, true);
+        /*for (int i = 0; i < instr_num_dsts(instr); i++) {
             if (opnd_is_memory_reference(instr_get_dst(instr, i))) {
-                instrument(drcontext, bb, instr, i, true);
             }
-        }
+        }*/
     }
 
     return DR_EMIT_DEFAULT;
@@ -243,15 +250,14 @@ void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 
 /*
 typedef struct _threadData_t {
-FILE *file;
-void *bufferBase;
-void *bufferPtr;
+    FILE *file;
+    void *bufferBase;
+    void *bufferPtr;
+    void *bufferEnd;
 } threadData_t;
 
 typedef struct _traceData_t {
     void *iAddr;
-    void *dAddr;
-    int32_t dSize;
     int32_t iType;
     uint64_t startT;
     uint64_t endT;
@@ -259,7 +265,7 @@ typedef struct _traceData_t {
 */
 
 static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
-    int pos, bool write) {
+    bool write) {
     reg_id_t reg1;
     reg_id_t regCX;
 
@@ -400,4 +406,27 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     if (drreg_unreserve_register(drcontext, ilist, where, reg1) != DRREG_SUCCESS ||
         drreg_unreserve_register(drcontext, ilist, where, regCX) != DRREG_SUCCESS)
         DR_ASSERT(false);
+}
+
+
+static void traceIO(void *drcontext) {
+    threadData_t *data = static_cast<threadData_t*>(
+        drmgr_get_tls_field(drcontext, tls_index));
+
+#ifdef REGINA_BINARY
+    dr_write_file(data->file, data->bufferBase,
+        static_cast<size_t>(data->bufferPtr - data->bufferBase));
+#else
+    traceData_t *ptr = static_cast<traceData_t*>(data->bufferBase);
+
+    int numTraces = static_cast<int>(static_cast<traceData_t*>(data->bufferPtr)
+        - static_cast<traceData_t*>(data->bufferBase));
+
+    for (int i = 0; i < numTraces; i++) {
+        dr_fprintf(data->file, "%llx, %d, %d, %lld, %lld\n", ptr[i].iAddr,
+            ptr[i].iType, ptr[i].timerState, ptr[i].startT, ptr[i].endT);
+    }
+#endif
+
+    data->bufferPtr = data->bufferBase;
 }
