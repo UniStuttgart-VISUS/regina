@@ -14,17 +14,19 @@ include(ExternalProject)
 ExternalProject_Add(dynamorio-module
 	PREFIX dr
 	SOURCE_DIR ${DYNAMORIO_DIR}
+    INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/exports
 	CMAKE_ARGS
 		-DCMAKE_CXX_STANDARD=98
 		-DDISABLE_WARNINGS=ON
-		-DDEBUG=OFF
+        -DDEBUG=ON
 		-DBUILD_DOCS=OFF
 		-DBUILD_DRSTATS=OFF
 		-DBUILD_SAMPLES=OFF
-		-DBUILD_TESTS=OFF)
+		-DBUILD_TESTS=OFF
+        -DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/exports)
 
 # Try to find DynamoRIO.
-list(APPEND CMAKE_PREFIX_PATH "${DYNAMORIO_DIR}/exports/cmake")
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_BINARY_DIR}/exports")
 find_package(DynamoRIO) #TODO: silence this guy!
 
 # REGINA target.
