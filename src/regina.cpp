@@ -53,6 +53,8 @@ typedef struct _traceDataWS_t {
         this->startT = rhs.startT;
         this->endT = rhs.endT;*/
         this->baseData = rhs;
+
+        return *this;
     }
 } traceDataWS_t;
 
