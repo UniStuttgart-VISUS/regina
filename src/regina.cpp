@@ -116,6 +116,8 @@ static void code_cache_init(void) {
     byte         *end;
 
     drcontext = dr_get_current_drcontext();
+
+
     ccTraceIOPC = static_cast<app_pc>(dr_nonheap_alloc(pageSize,
         DR_MEMPROT_READ |
         DR_MEMPROT_WRITE |
@@ -129,16 +131,36 @@ static void code_cache_init(void) {
 
     end = instrlist_encode(drcontext, ilist, ccTraceIOPC, false);
     if (!(size_t)(end - ccTraceIOPC) < pageSize) {
-        dr_fprintf(STDERR, "Page size not enough to encode clean call\n");
+        dr_fprintf(STDERR, "Page size not enough to encode clean call TraceIO\n");
     }
     instrlist_clear_and_destroy(drcontext, ilist);
 
     dr_memory_protect(ccTraceIOPC, pageSize, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
+
+    ccQueryPerformanceCounterPC = static_cast<app_pc>(dr_nonheap_alloc(pageSize,
+        DR_MEMPROT_READ |
+        DR_MEMPROT_WRITE |
+        DR_MEMPROT_EXEC));
+    ilist = instrlist_create(drcontext);
+
+    where = INSTR_CREATE_jmp_ind(drcontext, opnd_create_reg(DR_REG_XCX));
+    instrlist_meta_append(ilist, where);
+    dr_insert_clean_call(drcontext, ilist, where, (void*)ccQueryPerformanceCounter,
+        false, 0);
+
+    end = instrlist_encode(drcontext, ilist, ccQueryPerformanceCounterPC, false);
+    if (!(size_t)(end - ccQueryPerformanceCounterPC) < pageSize) {
+        dr_fprintf(STDERR, "Page size not enough to encode clean call QueryPerformanceCounter\n");
+    }
+    instrlist_clear_and_destroy(drcontext, ilist);
+
+    dr_memory_protect(ccQueryPerformanceCounterPC, pageSize, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
 }
 
 
 static void code_cache_exit(void) {
     dr_nonheap_free(ccTraceIOPC, pageSize);
+    dr_nonheap_free(ccQueryPerformanceCounterPC, pageSize);
 }
 
 
@@ -166,6 +188,22 @@ static void onThreadInit(void *drcontext) {
         + std::to_string(thread_index) + std::string(".mmtrd")).c_str(), "wb");
 
     thread_index++;
+}
+
+
+static void onThreadExit(void *drcontext) {
+    dr_fprintf(STDOUT, "Exit thread\n");
+
+    // write remaining buffer entries
+    traceIO(drcontext);
+
+    threadData_t *data = static_cast<threadData_t*>(
+        drmgr_get_tls_field(drcontext, tls_index));
+
+    fclose(data->file);
+
+    dr_thread_free(drcontext, data->bufferBase, MEM_BUF_SIZE);
+    dr_thread_free(drcontext, data, sizeof(threadData_t));
 }
 
 
