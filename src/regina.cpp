@@ -30,6 +30,7 @@ typedef struct _threadData_t {
 
 typedef struct _traceData_t {
     void *iAddr;
+    void *dAddr;
     int32_t iType;
     int32_t timerState;
     uint64_t startT;
@@ -69,7 +70,7 @@ typedef std::unordered_map<std::string, uint32_t> symbolIndexMap_t;
 
 
 static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
-    bool write);
+    int pos, bool write);
 
 static void traceIO(void *drcontext);
 
@@ -205,7 +206,7 @@ static void onThreadInit(void *drcontext) {
 #else
     data->file = fopen((std::string("memtrace_rv2_")
         + std::to_string(thread_index) + std::string(".mmtrd")).c_str(), "w");
-    fprintf(data->file, "Addr, Type, TimerState, StartTime, EndTime\n");
+    fprintf(data->file, "Addr, dAddr, Type, TimerState, StartTime, EndTime\n");
 #endif
 
     thread_index++;
@@ -247,19 +248,19 @@ static dr_emit_flags_t onBBInsert(void *drcontext, void *tag, instrlist_t *bb,
     dr_fprintf(STDOUT, "Instrumenting BB\n");
 
     if (instr_reads_memory(instr)) {
-        instrument(drcontext, bb, instr, false);
-        /*for (int i = 0; i < instr_num_srcs(instr); i++) {
+        for (int i = 0; i < instr_num_srcs(instr); i++) {
             if (opnd_is_memory_reference(instr_get_src(instr, i))) {
+                instrument(drcontext, bb, instr, i, false);
             }
-        }*/
+        }
     }
 
     if (instr_writes_memory(instr)) {
-        instrument(drcontext, bb, instr, true);
-        /*for (int i = 0; i < instr_num_dsts(instr); i++) {
+        for (int i = 0; i < instr_num_dsts(instr); i++) {
             if (opnd_is_memory_reference(instr_get_dst(instr, i))) {
+                instrument(drcontext, bb, instr, i, true);
             }
-        }*/
+        }
     }
 
     return DR_EMIT_DEFAULT;
@@ -419,29 +420,35 @@ typedef struct _traceData_t {
 */
 
 static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
-    bool write) {
+    int pos, bool write) {
     reg_id_t reg1;
     reg_id_t regCX;
 
     // set vector to reserve some registers, default none
-    drvector_t allowed;
-    drreg_init_and_fill_vector(&allowed, false);
+    drvector_t *allowed;
+    drreg_init_and_fill_vector(allowed, false);
     // we want to reserve CX register
-    drreg_set_vector_entry(&allowed, DR_REG_XCX, true);
+    drreg_set_vector_entry(allowed, DR_REG_XCX, true);
     // reserve two registers
-    if (drreg_reserve_register(drcontext, ilist, where, &allowed, &regCX) != DRREG_SUCCESS ||
+    if (drreg_reserve_register(drcontext, ilist, where, allowed, &regCX) != DRREG_SUCCESS ||
         drreg_reserve_register(drcontext, ilist, where, nullptr, &reg1) != DRREG_SUCCESS) {
-        drvector_delete(&allowed);
+        drvector_delete(allowed);
         return;
     }
-    drvector_delete(&allowed);
+    drvector_delete(allowed);
 
     // specify instructions inserted before where
-    // this would the capturing of meta information on the mem reference
+    // this would be the capturing of meta information on the mem reference
     // and a perf query to get the start timer
 
     opnd_t opnd1, opnd2;
     instr_t *instr;
+
+    opnd_t ref;
+    if (write)
+        ref = instr_get_dst(where, pos);
+    else
+        ref = instr_get_src(where, pos);
 
     // get trace buffer current ptr
     drmgr_insert_read_tls_field(drcontext, tls_index, ilist, where, regCX);
@@ -449,6 +456,13 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     opnd1 = opnd_create_reg(regCX);
     opnd2 = OPND_CREATE_MEMPTR(regCX, offsetof(threadData_t, bufferPtr));
     instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    // store data addr
+    drutil_insert_get_mem_addr(drcontext, ilist, where, ref, reg1, regCX);
+    opnd1 = OPND_CREATE_MEMPTR(regCX, offsetof(traceData_t, dAddr));
+    opnd2 = opnd_create_reg(reg1);
+    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
     instrlist_meta_preinsert(ilist, where, instr);
 
     // store read/write flag
@@ -469,7 +483,8 @@ static void instrument(void *drcontext, instrlist_t *ilist, instr_t *where,
     // store instr addr
     app_pc iPC = instr_get_app_pc(where);
     opnd1 = OPND_CREATE_MEMPTR(regCX, offsetof(traceData_t, iAddr));
-    instrlist_insert_mov_immed_ptrsz(drcontext, (ptr_int_t)(iPC), opnd1, ilist, where, nullptr, nullptr);
+    instrlist_insert_mov_immed_ptrsz(drcontext, (ptr_int_t)(iPC), opnd1, ilist, 
+        where, nullptr, nullptr);
 
 
     //// set jump restore label
@@ -649,8 +664,9 @@ static void traceIO(void *drcontext) {
     dr_printf("NumTraces: %d\n", numTraces);
 
     for (size_t i = 0; i < numTraces; i++) {
-        fprintf(data->file, "%llx, %d, %d, %lld, %lld\n", ptr[i].iAddr,
-            ptr[i].iType, ptr[i].timerState, ptr[i].startT, ptr[i].endT);
+        fprintf(data->file, "%llx, %llx, %d, %d, %lld, %lld\n", ptr[i].iAddr,
+            ptr[i].dAddr, ptr[i].iType, ptr[i].timerState, ptr[i].startT,
+            ptr[i].endT);
     }
 #endif
 
