@@ -256,6 +256,15 @@ static void onExit(void) {
         fclose(f);
     }
 
+    // write derived partial symbol table on disk
+    FILE *symf = fopen((std::string("memtrace_rv2")
+        + std::string(".mmsym")).c_str(), "wb");
+
+    for (auto &e : sim) {
+        dr_fprintf(symf, "%d|%s\n", e.second, e.first);
+    }
+
+    fclose(symf);
 
     dr_fprintf(STDOUT, "Client cleanup\n");
 
