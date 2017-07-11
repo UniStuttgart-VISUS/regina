@@ -246,6 +246,7 @@ static dr_emit_flags_t onBBInsert(void *drcontext, void *tag, instrlist_t *bb,
 
 
 static void onExit(void) {
+#ifndef REGINA_BINARY
     // read trace file and perform symbol queries
     dr_fprintf(STDOUT, "Performing symbol queries\n");
 
@@ -305,6 +306,7 @@ static void onExit(void) {
     }
 
     fclose(symf);
+#endif
 
     dr_fprintf(STDOUT, "Client cleanup\n");
 
