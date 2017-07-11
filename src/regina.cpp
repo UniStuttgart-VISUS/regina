@@ -313,6 +313,7 @@ static void onExit(void) {
     }
 
     if (!drmgr_unregister_thread_init_event(onThreadInit) ||
+        !drmgr_unregister_thread_exit_event(onThreadExit) ||
         !drmgr_unregister_bb_insertion_event(onBBInsert)) {
         dr_fprintf(STDERR, "Could not unregister event\n");
     }
@@ -349,6 +350,7 @@ void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 
     dr_register_exit_event(onExit);
     if (!drmgr_register_thread_init_event(onThreadInit) ||
+        !drmgr_register_thread_exit_event(onThreadExit) ||
         !drmgr_register_bb_app2app_event(onBBApp2App, &priority) ||
         !drmgr_register_bb_instrumentation_event(nullptr, onBBInsert, &priority)) {
         dr_fprintf(STDERR, "Could not register event\n");
